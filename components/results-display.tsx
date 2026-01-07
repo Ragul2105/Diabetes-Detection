@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { 
   BarChart, 
   Bar, 
@@ -13,8 +13,9 @@ import {
 } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, Info } from "lucide-react";
+import { AlertCircle, Info, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { getGeminiAssessment, GeminiAssessment } from "@/lib/api";
 
 // Define severity levels and their colors
 const severityColors = {
@@ -37,11 +38,68 @@ interface ResultsDisplayProps {
 export function ResultsDisplay({ result }: ResultsDisplayProps) {
   const { detailed_classification, highest_probability_class } = result;
   
-  // Format data for chart
-  const chartData = Object.entries(detailed_classification).map(([name, value]) => ({
-    name,
-    value,
-  }));
+  // State for Gemini AI assessment
+  const [aiAssessment, setAiAssessment] = useState<GeminiAssessment | null>(null);
+  const [isLoadingAssessment, setIsLoadingAssessment] = useState(true);
+  
+  // Fetch Gemini assessment on mount
+  useEffect(() => {
+    const fetchAssessment = async () => {
+      setIsLoadingAssessment(true);
+      const maxProbability = detailed_classification[highest_probability_class] || 0;
+      const assessment = await getGeminiAssessment(highest_probability_class, maxProbability);
+      setAiAssessment(assessment);
+      setIsLoadingAssessment(false);
+    };
+    
+    fetchAssessment();
+  }, [highest_probability_class, detailed_classification]);
+  
+  // Consolidate values below 15% into the maximum value
+  const consolidateClassification = (classification: Record<string, number>) => {
+    const THRESHOLD = 15;
+    const entries = Object.entries(classification);
+    
+    // Find the maximum value entry
+    let maxEntry = entries[0];
+    for (const entry of entries) {
+      if (entry[1] > maxEntry[1]) {
+        maxEntry = entry;
+      }
+    }
+    
+    // Calculate consolidated values
+    const consolidated: Record<string, number> = {};
+    let additionalValue = 0;
+    
+    for (const [name, value] of entries) {
+      if (name === maxEntry[0]) {
+        // This is the max entry, will add to it later
+        consolidated[name] = value;
+      } else if (value < THRESHOLD) {
+        // Below threshold, set to 0 and add to the max value
+        consolidated[name] = 0;
+        additionalValue += value;
+      } else {
+        // Above threshold, keep as is
+        consolidated[name] = value;
+      }
+    }
+    
+    // Add the consolidated value to the maximum
+    consolidated[maxEntry[0]] += additionalValue;
+    
+    return consolidated;
+  };
+  
+  const consolidatedClassification = consolidateClassification(detailed_classification);
+  
+  // Format data for chart - show all entries but with consolidated values
+  const chartData = Object.entries(consolidatedClassification)
+    .map(([name, value]) => ({
+      name,
+      value: Math.round(value * 100) / 100, // Round to 2 decimal places
+    }));
   
   // Get severity info
   const getSeverityInfo = (severity: string) => {
@@ -109,10 +167,25 @@ export function ResultsDisplay({ result }: ResultsDisplayProps) {
           </Alert>
           
           <div className="space-y-2 mb-6">
-            <h4 className="font-medium">Assessment:</h4>
-            <p>{severityInfo.description}</p>
-            <h4 className="font-medium mt-4">Recommended Action:</h4>
-            <p>{severityInfo.action}</p>
+            <h4 className="font-medium">Specialist Assessment:</h4>
+            {isLoadingAssessment ? (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Generating specialist assessment...</span>
+              </div>
+            ) : (
+              <>
+                <p className="text-gray-700 leading-relaxed">
+                  {aiAssessment?.description} {aiAssessment?.cause}
+                </p>
+                <p className="text-xs text-amber-600 mt-2 italic">
+                  ⚠️ Note: Potential causes mentioned are assumptions based on general patterns. For accurate diagnosis, please consult a doctor.
+                </p>
+                
+                <h4 className="font-medium mt-4">Recommended Remedy:</h4>
+                <p className="text-gray-700 font-medium">{aiAssessment?.remedy}</p>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -122,7 +195,7 @@ export function ResultsDisplay({ result }: ResultsDisplayProps) {
         <CardHeader>
           <CardTitle>Detailed Classification</CardTitle>
           <CardDescription>
-            Probability distribution across all severity levels
+            Probability distribution across severity levels (values below 15% are consolidated into the highest probability class)
           </CardDescription>
         </CardHeader>
         <CardContent>
